@@ -1,0 +1,750 @@
+diff --git a/tabbycat/adjfeedback/migrations/0020_silent_round_feedback.py b/tabbycat/adjfeedback/migrations/0020_silent_round_feedback.py
+new file mode 100644
+index 0000000..19b9e24
+--- /dev/null
++++ b/tabbycat/adjfeedback/migrations/0020_silent_round_feedback.py
+@@ -0,0 +1,49 @@
++from django.db import migrations, models
++import django.db.models.deletion
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ('adjfeedback', '0019_merge_20241106_0903'),
++        ('adjallocation', '0001_initial'),
++        ('draw', '0001_initial'),
++    ]
++
++    operations = [
++        migrations.CreateModel(
++            name='SilentRoundFeedback',
++            fields=[
++                ('id', models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('feedback_text', models.TextField(
++                    verbose_name='feedback',
++                    help_text='Written feedback for all teams in this debate. Only visible to teams after the tab releases it.',
++                )),
++                ('submitted_at', models.DateTimeField(auto_now_add=True, verbose_name='submitted at')),
++                ('updated_at', models.DateTimeField(auto_now=True, verbose_name='last updated')),
++                ('debate', models.ForeignKey(
++                    on_delete=django.db.models.deletion.CASCADE,
++                    related_name='silent_round_feedbacks',
++                    to='draw.debate',
++                    verbose_name='debate',
++                )),
++                ('submitted_by', models.ForeignKey(
++                    on_delete=django.db.models.deletion.CASCADE,
++                    to='adjallocation.debateadjudicator',
++                    verbose_name='submitted by (debate adjudicator)',
++                    related_name='silent_round_feedbacks',
++                )),
++            ],
++            options={
++                'verbose_name': 'silent round feedback',
++                'verbose_name_plural': 'silent round feedbacks',
++            },
++        ),
++        migrations.AddConstraint(
++            model_name='silentroundfeedback',
++            constraint=models.UniqueConstraint(
++                fields=['debate', 'submitted_by'],
++                name='unique_silent_feedback_per_adj_per_debate',
++            ),
++        ),
++    ]
+diff --git a/tabbycat/adjfeedback/models.py b/tabbycat/adjfeedback/models.py
+index df6371f..338f6c0 100644
+--- a/tabbycat/adjfeedback/models.py
++++ b/tabbycat/adjfeedback/models.py
+@@ -145,3 +145,43 @@ class AdjudicatorFeedback(Submission):
+         if self.adjudicator not in self.debate.adjudicators:
+             raise ValidationError(gettext("Adjudicator did not see this debate."))
+         return super(AdjudicatorFeedback, self).clean()
++
++
++class SilentRoundFeedback(models.Model):
++    """Post-tournament written feedback from an adjudicator for a silent round debate.
++
++    Each adjudicator in the panel submits their own feedback independently.
++    Feedback is private between the submitting adj and the teams + tab — other
++    adjudicators in the same debate cannot see each other's write-ups.
++    Visible to teams only after the tab releases it via the Tab Release preference.
++    """
++
++    debate = models.ForeignKey(
++        'draw.Debate',
++        on_delete=models.CASCADE,
++        related_name='silent_round_feedbacks',
++        verbose_name=_("debate"),
++    )
++    submitted_by = models.ForeignKey(
++        DebateAdjudicator,
++        on_delete=models.CASCADE,
++        related_name='silent_round_feedbacks',
++        verbose_name=_("submitted by (debate adjudicator)"),
++    )
++    feedback_text = models.TextField(
++        verbose_name=_("feedback"),
++        help_text=_("Written feedback for all teams in this debate. Only visible to teams after the tab releases it."),
++    )
++    submitted_at = models.DateTimeField(auto_now_add=True, verbose_name=_("submitted at"))
++    updated_at = models.DateTimeField(auto_now=True, verbose_name=_("last updated"))
++
++    class Meta:
++        verbose_name = _("silent round feedback")
++        verbose_name_plural = _("silent round feedbacks")
++        unique_together = [('debate', 'submitted_by')]
++
++    def __str__(self):
++        return "Silent round feedback by {} for {}".format(
++            self.submitted_by.adjudicator.name,
++            self.debate,
++        )
+diff --git a/tabbycat/adjfeedback/silent_round_views.py b/tabbycat/adjfeedback/silent_round_views.py
+new file mode 100644
+index 0000000..0f6ada0
+--- /dev/null
++++ b/tabbycat/adjfeedback/silent_round_views.py
+@@ -0,0 +1,255 @@
++"""Views for silent round feedback.
++
++Each adjudicator submits their own independent feedback per debate.
++Feedback is private — other adjudicators in the same panel cannot see
++each other's write-ups. Only the submitting adj, the teams in that debate,
++and the tab/CA can see a given piece of feedback.
++
++Teams only see feedback after the tab enables release via the
++'silent_round_feedback_released' preference in Tab Release settings.
++
++The entire feature can be disabled per-tournament via the
++'silent_round_feedback_enabled' preference.
++"""
++import logging
++
++from django.contrib import messages
++from django.core.exceptions import PermissionDenied
++from django.shortcuts import get_object_or_404, redirect
++from django.utils.translation import gettext as _
++from django.views.generic import TemplateView
++
++from adjallocation.models import DebateAdjudicator
++from draw.models import Debate
++from participants.models import Person
++from tournaments.mixins import TournamentMixin
++from utils.mixins import AdministratorMixin
++
++from .models import SilentRoundFeedback
++
++logger = logging.getLogger(__name__)
++
++
++# ---------------------------------------------------------------------------
++# Adjudicator: submit silent round feedback via private URL
++# ---------------------------------------------------------------------------
++
++class SilentRoundFeedbackSubmitView(TournamentMixin, TemplateView):
++    """Shown to an adjudicator via their private URL.
++
++    Lists all silent-round debates they adjudicated (where draw + motions
++    are both released), allowing them to submit or update their own write-up
++    for each. Each adjudicator sees only their own submission.
++    """
++    template_name = 'silent_round_feedback_submit.html'
++
++    def _get_adjudicator(self):
++        person = get_object_or_404(Person, url_key=self.kwargs['url_key'])
++        if not hasattr(person, 'adjudicator'):
++            raise PermissionDenied(_("This page is only available to adjudicators."))
++        return person.adjudicator
++
++    def _feature_enabled(self):
++        return self.tournament.pref('silent_round_feedback_enabled')
++
++    def get_context_data(self, **kwargs):
++        adjudicator = self._get_adjudicator()
++        tournament = self.tournament
++
++        if not self._feature_enabled():
++            kwargs['feature_disabled'] = True
++            kwargs['adjudicator'] = adjudicator
++            return super().get_context_data(**kwargs)
++
++        from tournaments.models import Round
++        debateadjs = DebateAdjudicator.objects.filter(
++            adjudicator=adjudicator,
++            debate__round__tournament=tournament,
++            debate__round__silent=True,
++            debate__round__draw_status=Round.Status.RELEASED,
++            debate__round__motions_status=Round.MotionsStatus.MOTIONS_RELEASED,
++        ).select_related(
++            'debate__round',
++        ).prefetch_related(
++            'debate__debateteam_set__team',
++        ).order_by('debate__round__seq')
++
++        # Each adj sees only their own submission
++        entries = []
++        for da in debateadjs:
++            try:
++                existing = SilentRoundFeedback.objects.get(debate=da.debate, submitted_by=da)
++            except SilentRoundFeedback.DoesNotExist:
++                existing = None
++            entries.append({
++                'debateadj': da,
++                'debate': da.debate,
++                'existing': existing,
++            })
++
++        kwargs['adjudicator'] = adjudicator
++        kwargs['entries'] = entries
++        kwargs['url_key'] = self.kwargs['url_key']
++        return super().get_context_data(**kwargs)
++
++    def post(self, request, *args, **kwargs):
++        adjudicator = self._get_adjudicator()
++        tournament = self.tournament
++
++        if not self._feature_enabled():
++            raise PermissionDenied(_("Silent round feedback is not enabled for this tournament."))
++
++        debate_id = request.POST.get('debate_id')
++        feedback_text = request.POST.get('feedback_text', '').strip()
++
++        if not debate_id or not feedback_text:
++            messages.error(request, _("Please provide feedback text before submitting."))
++            return redirect(request.path)
++
++        from tournaments.models import Round
++        debate = get_object_or_404(
++            Debate,
++            id=debate_id,
++            round__tournament=tournament,
++            round__silent=True,
++            round__draw_status=Round.Status.RELEASED,
++            round__motions_status=Round.MotionsStatus.MOTIONS_RELEASED,
++        )
++
++        try:
++            debateadj = DebateAdjudicator.objects.get(adjudicator=adjudicator, debate=debate)
++        except DebateAdjudicator.DoesNotExist:
++            raise PermissionDenied(_("You were not an adjudicator in this debate."))
++
++        obj, created = SilentRoundFeedback.objects.update_or_create(
++            debate=debate,
++            submitted_by=debateadj,
++            defaults={'feedback_text': feedback_text},
++        )
++
++        if created:
++            messages.success(request, _("Feedback submitted successfully."))
++        else:
++            messages.success(request, _("Feedback updated successfully."))
++
++        logger.info("Silent round feedback %s by %s for debate %s",
++                    'created' if created else 'updated',
++                    adjudicator.name, debate)
++
++        return redirect(request.path)
++
++
++# ---------------------------------------------------------------------------
++# Teams: view silent round feedback via private URL
++# ---------------------------------------------------------------------------
++
++class SilentRoundFeedbackTeamView(TournamentMixin, TemplateView):
++    """Shown to a team member via their private URL.
++
++    Only visible after the tab sets silent_round_feedback_released = True
++    in the Tab Release preferences. Teams see all adjudicators' feedback
++    for their silent round debates (each adj's write-up shown separately).
++    """
++    template_name = 'silent_round_feedback_team_view.html'
++
++    def get_context_data(self, **kwargs):
++        person = get_object_or_404(Person, url_key=self.kwargs['url_key'])
++        tournament = self.tournament
++
++        if not hasattr(person, 'speaker'):
++            raise PermissionDenied(_("This page is only available to team members."))
++
++        team = person.speaker.team
++        enabled = tournament.pref('silent_round_feedback_enabled')
++        released = tournament.pref('silent_round_feedback_released')
++
++        kwargs['person'] = person
++        kwargs['team'] = team
++        kwargs['feature_disabled'] = not enabled
++        kwargs['not_released'] = not released
++
++        if not enabled or not released:
++            return super().get_context_data(**kwargs)
++
++        from draw.models import DebateTeam
++        from tournaments.models import Round
++        debateteams = DebateTeam.objects.filter(
++            team=team,
++            debate__round__tournament=tournament,
++            debate__round__silent=True,
++            debate__round__draw_status=Round.Status.RELEASED,
++            debate__round__motions_status=Round.MotionsStatus.MOTIONS_RELEASED,
++        ).select_related(
++            'debate__round',
++        ).prefetch_related(
++            'debate__debateteam_set__team',
++            'debate__debateadjudicator_set__adjudicator',
++            'debate__silent_round_feedbacks__submitted_by__adjudicator',
++        ).order_by('debate__round__seq')
++
++        entries = []
++        for dt in debateteams:
++            feedbacks = list(dt.debate.silent_round_feedbacks.all())
++            entries.append({
++                'debate': dt.debate,
++                'feedbacks': feedbacks,   # one per adj who submitted
++            })
++
++        kwargs['entries'] = entries
++        return super().get_context_data(**kwargs)
++
++
++# ---------------------------------------------------------------------------
++# Tab/CA: view all silent round feedback for the tournament
++# ---------------------------------------------------------------------------
++
++class SilentRoundFeedbackAdminView(AdministratorMixin, TournamentMixin, TemplateView):
++    """Admin view of all submitted silent round feedback.
++
++    Shows each adjudicator's submission separately. Tab and CA can see
++    all submissions regardless of release status.
++    Also shows which debates have partial or no submissions yet.
++    """
++    template_name = 'silent_round_feedback_admin.html'
++
++    def get_context_data(self, **kwargs):
++        tournament = self.tournament
++        enabled = tournament.pref('silent_round_feedback_enabled')
++        released = tournament.pref('silent_round_feedback_released')
++
++        from tournaments.models import Round
++        # All silent rounds with draw+motions released
++        silent_debates = Debate.objects.filter(
++            round__tournament=tournament,
++            round__silent=True,
++            round__draw_status=Round.Status.RELEASED,
++            round__motions_status=Round.MotionsStatus.MOTIONS_RELEASED,
++        ).select_related('round').prefetch_related(
++            'debateadjudicator_set__adjudicator',
++            'debateteam_set__team',
++            'silent_round_feedbacks__submitted_by__adjudicator',
++        ).order_by('round__seq', 'room_rank')
++
++        debate_entries = []
++        for debate in silent_debates:
++            all_adjs = list(debate.debateadjudicator_set.all())
++            submitted = {fb.submitted_by_id: fb for fb in debate.silent_round_feedbacks.all()}
++            adj_entries = []
++            for da in all_adjs:
++                adj_entries.append({
++                    'debateadj': da,
++                    'feedback': submitted.get(da.id),
++                })
++            debate_entries.append({
++                'debate': debate,
++                'adj_entries': adj_entries,
++                'submitted_count': len(submitted),
++                'total_adjs': len(all_adjs),
++            })
++
++        kwargs['debate_entries'] = debate_entries
++        kwargs['enabled'] = enabled
++        kwargs['released'] = released
++        kwargs['page_title'] = _("Silent Round Feedback")
++        kwargs['page_emoji'] = "📝"
++        return super().get_context_data(**kwargs)
+diff --git a/tabbycat/adjfeedback/templates/silent_round_feedback_admin.html b/tabbycat/adjfeedback/templates/silent_round_feedback_admin.html
+new file mode 100644
+index 0000000..e420c6b
+--- /dev/null
++++ b/tabbycat/adjfeedback/templates/silent_round_feedback_admin.html
+@@ -0,0 +1,71 @@
++{% extends "base.html" %}
++{% load i18n %}
++
++{% block page-title %}📝 {% trans "Silent Round Feedback" %}{% endblock %}
++{% block head-title %}<span class="emoji">📝</span> {% trans "Silent Round Feedback" %}{% endblock %}
++
++{% block content %}
++
++<div class="d-flex mb-3 align-items-center">
++  <div>
++    <span class="badge {% if enabled %}badge-success{% else %}badge-secondary{% endif %} mr-2">
++      {% if enabled %}{% trans "Feature: Enabled" %}{% else %}{% trans "Feature: Disabled" %}{% endif %}
++    </span>
++    <span class="badge {% if released %}badge-success{% else %}badge-warning{% endif %}">
++      {% if released %}{% trans "Released to Teams" %}{% else %}{% trans "Not Released to Teams" %}{% endif %}
++    </span>
++  </div>
++  <a href="{% tournamenturl 'options-tournament-section' section='tab_release' %}" class="btn btn-sm btn-outline-secondary ml-auto">
++    ⚙️ {% trans "Manage in Tab Release Settings" %}
++  </a>
++</div>
++
++{% if not enabled %}
++  {% trans "Silent round feedback is currently disabled for this tournament. Enable it in Edit Configuration → Tab Release." as message %}
++  {% include "components/alert.html" with type="warning" %}
++{% endif %}
++
++{% if not released %}
++  {% trans "Feedback has not been released to teams yet. Teams cannot see any feedback until you enable 'Release silent round feedback to teams' in Tab Release settings." as message %}
++  {% include "components/alert.html" with type="info" %}
++{% endif %}
++
++{% if not debate_entries %}
++  {% trans "No silent round debates found with draw and motions released." as message %}
++  {% include "components/alert.html" with type="info" %}
++{% endif %}
++
++{% for entry in debate_entries %}
++  <div class="card mb-4">
++    <div class="card-header d-flex justify-content-between align-items-center">
++      <div>
++        <strong>{{ entry.debate.round.name }}</strong>
++        <span class="text-muted ml-2 small">
++          {% for dt in entry.debate.debateteam_set.all %}{{ dt.team.short_name }}{% if not forloop.last %} vs {% endif %}{% endfor %}
++        </span>
++      </div>
++      <span class="badge {% if entry.submitted_count == entry.total_adjs %}badge-success{% elif entry.submitted_count > 0 %}badge-warning{% else %}badge-secondary{% endif %}">
++        {{ entry.submitted_count }}/{{ entry.total_adjs }} {% trans "submitted" %}
++      </span>
++    </div>
++    <div class="card-body p-0">
++      {% for adj_entry in entry.adj_entries %}
++        <div class="px-3 py-2 {% if not forloop.last %}border-bottom{% endif %}">
++          <div class="d-flex justify-content-between align-items-start">
++            <strong class="small">{{ adj_entry.debateadj.adjudicator.name }}</strong>
++            {% if adj_entry.feedback %}
++              <small class="text-muted">{% blocktrans trimmed with time=adj_entry.feedback.updated_at %}updated {{ time }}{% endblocktrans %}</small>
++            {% else %}
++              <span class="badge badge-light">{% trans "Not submitted" %}</span>
++            {% endif %}
++          </div>
++          {% if adj_entry.feedback %}
++            <p class="mb-0 mt-1 small" style="white-space: pre-wrap; border-left: 3px solid #dee2e6; padding-left: 0.75rem;">{{ adj_entry.feedback.feedback_text }}</p>
++          {% endif %}
++        </div>
++      {% endfor %}
++    </div>
++  </div>
++{% endfor %}
++
++{% endblock %}
+diff --git a/tabbycat/adjfeedback/templates/silent_round_feedback_submit.html b/tabbycat/adjfeedback/templates/silent_round_feedback_submit.html
+new file mode 100644
+index 0000000..dbe39bc
+--- /dev/null
++++ b/tabbycat/adjfeedback/templates/silent_round_feedback_submit.html
+@@ -0,0 +1,80 @@
++{% extends "base.html" %}
++{% load i18n %}
++
++{% block page-title %}📝 {% trans "Silent Round Feedback" %}{% endblock %}
++{% block head-title %}<span class="emoji">📝</span> {% trans "Silent Round Feedback" %}{% endblock %}
++{% block sub-title %}{{ adjudicator.name }}{% endblock %}
++
++{% block noindex %}<meta name="robots" content="noindex" />{% endblock %}
++
++{% block content %}
++
++{% if feature_disabled %}
++  {% trans "Silent round feedback is not enabled for this tournament." as message %}
++  {% include "components/alert.html" with type="warning" %}
++
++{% elif not entries %}
++  {% trans "You have no silent round debates to provide feedback for yet. This page will update once the draw and motions for a silent round have been released." as message %}
++  {% include "components/alert.html" with type="info" %}
++
++{% else %}
++
++  {% blocktrans trimmed asvar explainer %}
++    Write feedback for each silent round debate you judged. Your feedback is private — other
++    adjudicators in your panel cannot see your write-up. Teams and the tab team will be able
++    to read it once the tab releases silent round feedback after the tournament.
++  {% endblocktrans %}
++  {% include "components/explainer-card.html" with type="info" %}
++
++  {% for entry in entries %}
++    <div class="card mb-4">
++      <div class="card-header d-flex justify-content-between align-items-center">
++        <strong>{{ entry.debate.round.name }}</strong>
++        {% if entry.existing %}
++          <span class="badge badge-success">✓ {% trans "Submitted" %}</span>
++        {% else %}
++          <span class="badge badge-warning">{% trans "Not yet submitted" %}</span>
++        {% endif %}
++      </div>
++      <div class="card-body">
++
++        <p class="text-muted small mb-3">
++          {% for dt in entry.debate.debateteam_set.all %}
++            <strong>{{ dt.team.short_name }}</strong>{% if not forloop.last %} vs {% endif %}
++          {% endfor %}
++        </p>
++
++        {% if entry.existing %}
++          <div class="alert alert-light border mb-3">
++            <p class="mb-1"><small class="text-muted">{% trans "Your current feedback:" %}</small></p>
++            <p class="mb-1" style="white-space: pre-wrap;">{{ entry.existing.feedback_text }}</p>
++            <small class="text-muted">{% blocktrans trimmed with time=entry.existing.updated_at %}Last updated: {{ time }}{% endblocktrans %}</small>
++          </div>
++        {% endif %}
++
++        <form method="POST">
++          {% csrf_token %}
++          <input type="hidden" name="debate_id" value="{{ entry.debate.id }}">
++          <div class="form-group">
++            <label for="feedback_{{ entry.debate.id }}">
++              {% if entry.existing %}{% trans "Update your feedback:" %}{% else %}{% trans "Write your feedback:" %}{% endif %}
++            </label>
++            <textarea id="feedback_{{ entry.debate.id }}" name="feedback_text" class="form-control" rows="6"
++              placeholder="{% trans "Provide constructive written feedback. All teams in this debate will be able to read this." %}"
++              required>{% if entry.existing %}{{ entry.existing.feedback_text }}{% endif %}</textarea>
++            <small class="form-text text-muted">
++              {% trans "Your feedback is yours alone — other judges in this panel cannot see it." %}
++            </small>
++          </div>
++          <button type="submit" class="btn btn-primary">
++            {% if entry.existing %}{% trans "Update Feedback" %}{% else %}{% trans "Submit Feedback" %}{% endif %}
++          </button>
++        </form>
++
++      </div>
++    </div>
++  {% endfor %}
++
++{% endif %}
++
++{% endblock %}
+diff --git a/tabbycat/adjfeedback/templates/silent_round_feedback_team_view.html b/tabbycat/adjfeedback/templates/silent_round_feedback_team_view.html
+new file mode 100644
+index 0000000..490d205
+--- /dev/null
++++ b/tabbycat/adjfeedback/templates/silent_round_feedback_team_view.html
+@@ -0,0 +1,63 @@
++{% extends "base.html" %}
++{% load i18n %}
++
++{% block page-title %}📝 {% trans "Silent Round Feedback" %}{% endblock %}
++{% block head-title %}<span class="emoji">📝</span> {% trans "Silent Round Feedback" %}{% endblock %}
++{% block sub-title %}{{ team.short_name }}{% endblock %}
++
++{% block noindex %}<meta name="robots" content="noindex" />{% endblock %}
++
++{% block content %}
++
++{% if feature_disabled %}
++  {% trans "Silent round feedback is not enabled for this tournament." as message %}
++  {% include "components/alert.html" with type="info" %}
++
++{% elif not_released %}
++  {% trans "Silent round feedback has not been released yet. Check back after the tournament has concluded." as message %}
++  {% include "components/alert.html" with type="info" %}
++
++{% elif not entries %}
++  {% trans "You have no silent round debates." as message %}
++  {% include "components/alert.html" with type="info" %}
++
++{% else %}
++
++  {% blocktrans trimmed asvar explainer %}
++    Below is written feedback from your adjudicators for silent rounds.
++    Each adjudicator's feedback is shown separately.
++  {% endblocktrans %}
++  {% include "components/explainer-card.html" with type="info" %}
++
++  {% for entry in entries %}
++    <div class="card mb-4">
++      <div class="card-header">
++        <strong>{{ entry.debate.round.name }}</strong>
++        <span class="text-muted ml-2 small">
++          {% for dt in entry.debate.debateteam_set.all %}
++            {% if dt.team == team %}<strong>{{ dt.team.short_name }}</strong>{% else %}{{ dt.team.short_name }}{% endif %}
++            {% if not forloop.last %} vs {% endif %}
++          {% endfor %}
++        </span>
++      </div>
++      <div class="card-body">
++        {% if entry.feedbacks %}
++          {% for fb in entry.feedbacks %}
++            <div class="mb-3 {% if not forloop.last %}pb-3 border-bottom{% endif %}">
++              <p class="mb-1">
++                <strong>{{ fb.submitted_by.adjudicator.name }}</strong>
++                <small class="text-muted ml-1">{% blocktrans trimmed with time=fb.submitted_at %}submitted {{ time }}{% endblocktrans %}</small>
++              </p>
++              <p class="mb-0" style="white-space: pre-wrap; border-left: 3px solid #dee2e6; padding-left: 0.75rem;">{{ fb.feedback_text }}</p>
++            </div>
++          {% endfor %}
++        {% else %}
++          <p class="text-muted font-italic mb-0">{% trans "No adjudicators have submitted feedback for this debate yet." %}</p>
++        {% endif %}
++      </div>
++    </div>
++  {% endfor %}
++
++{% endif %}
++
++{% endblock %}
+diff --git a/tabbycat/adjfeedback/urls_admin.py b/tabbycat/adjfeedback/urls_admin.py
+index c98c990..8d1864f 100644
+--- a/tabbycat/adjfeedback/urls_admin.py
++++ b/tabbycat/adjfeedback/urls_admin.py
+@@ -3,6 +3,7 @@ from django.urls import path
+ from participants.models import Adjudicator, Team
+ 
+ from . import views
++from .silent_round_views import SilentRoundFeedbackAdminView
+ 
+ urlpatterns = [
+     # Overviews
+@@ -85,4 +86,9 @@ urlpatterns = [
+     path('csv/feedback.csv',
+         views.AdjudicatorFeedbackCsvView.as_view(),
+         name='adjfeedback-csv-feedback'),
++
++    # Silent round feedback (post-tournament accountability)
++    path('silent-round-feedback/',
++        SilentRoundFeedbackAdminView.as_view(),
++        name='adjfeedback-silent-round-feedback-admin'),
+ ]
+diff --git a/tabbycat/adjfeedback/urls_public.py b/tabbycat/adjfeedback/urls_public.py
+index 693bf7f..f4a1ca6 100644
+--- a/tabbycat/adjfeedback/urls_public.py
++++ b/tabbycat/adjfeedback/urls_public.py
+@@ -3,6 +3,7 @@ from django.urls import path
+ from participants.models import Adjudicator, Team
+ 
+ from . import views
++from .silent_round_views import SilentRoundFeedbackSubmitView, SilentRoundFeedbackTeamView
+ 
+ urlpatterns = [
+     # Overviews
+@@ -28,4 +29,12 @@ urlpatterns = [
+     path('add/a<slug:url_key>/',
+         views.AdjudicatorAddFeedbackByRandomisedUrlView.as_view(),
+         name='adjfeedback-public-add-from-adjudicator-randomised'),
++
++    # Silent round feedback — adj submits, teams view (both via private URL)
++    path('silent/adj/<slug:url_key>/',
++        SilentRoundFeedbackSubmitView.as_view(),
++        name='adjfeedback-silent-round-feedback-submit'),
++    path('silent/team/<slug:url_key>/',
++        SilentRoundFeedbackTeamView.as_view(),
++        name='adjfeedback-silent-round-feedback-team'),
+ ]
+diff --git a/tabbycat/options/preferences.py b/tabbycat/options/preferences.py
+index d1c425e..c35a4cb 100644
+--- a/tabbycat/options/preferences.py
++++ b/tabbycat/options/preferences.py
+@@ -903,6 +903,24 @@ class PrivateBallotsReleased(BooleanPreference):
+     default = False
+ 
+ 
++@tournament_preferences_registry.register
++class SilentRoundFeedbackEnabled(BooleanPreference):
++    help_text = _("Enables the silent round feedback feature. When on, adjudicators will see a 'Fill Silent Round Feedback' option on their private URL page after draw and motions are released for a silent round.")
++    verbose_name = _("Enable silent round feedback")
++    section = tab_release
++    name = 'silent_round_feedback_enabled'
++    default = False
++
++
++@tournament_preferences_registry.register
++class SilentRoundFeedbackReleased(BooleanPreference):
++    help_text = _("Releases silent round feedback to teams via their private URLs. ")
++    verbose_name = _("Release silent round feedback to teams")
++    section = tab_release
++    name = 'silent_round_feedback_released'
++    default = False
++
++
+ # ==============================================================================
+ data_entry = Section('data_entry', verbose_name=_("Data Entry"))
+ # ==============================================================================
+diff --git a/tabbycat/privateurls/templates/private_url_landing.html b/tabbycat/privateurls/templates/private_url_landing.html
+index 67899aa..e26657a 100644
+--- a/tabbycat/privateurls/templates/private_url_landing.html
++++ b/tabbycat/privateurls/templates/private_url_landing.html
+@@ -94,6 +94,19 @@
+           {% include "components/item-action.html" %}
+       {% endif %}
+     {% endif %}
++
++    {% if pref.silent_round_feedback_enabled %}
++      {% if object.adjudicator %}
++        {% tournamenturl 'adjfeedback-silent-round-feedback-submit' url_key as url %}
++        {% trans "Fill Silent Round Feedback" as text %}
++        {% include "components/item-action.html" with icon="edit" %}
++      {% elif pref.silent_round_feedback_released %}
++        {% tournamenturl 'adjfeedback-silent-round-feedback-team' url_key as url %}
++        {% trans "View Silent Round Feedback" as text %}
++        {% include "components/item-action.html" with icon="file-text" %}
++      {% endif %}
++    {% endif %}
++
+   </div>
+ 
+   <div class="card-deck">
+diff --git a/tabbycat/templates/nav/admin_nav.html b/tabbycat/templates/nav/admin_nav.html
+index 8f5f34f..fb80696 100644
+--- a/tabbycat/templates/nav/admin_nav.html
++++ b/tabbycat/templates/nav/admin_nav.html
+@@ -201,6 +201,9 @@
+       <a class="list-group-item" href="{% tournamenturl 'adjfeedback-update-scores-bulk' %}">
+         <i data-feather="upload"></i>{% trans "Bulk Update" %}
+       </a>
++      <a class="list-group-item" href="{% tournamenturl 'adjfeedback-silent-round-feedback-admin' %}">
++        <i data-feather="edit"></i>{% trans "Silent Round Feedback" %}
++      </a>
+     </div>
+   </div>
+ 
+diff --git a/tabbycat/tournaments/migrations/0016_round_silent_feedback_released.py b/tabbycat/tournaments/migrations/0016_round_silent_feedback_released.py
+new file mode 100644
+index 0000000..a05a87d
+--- /dev/null
++++ b/tabbycat/tournaments/migrations/0016_round_silent_feedback_released.py
+@@ -0,0 +1,20 @@
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ('tournaments', '0015_alter_round_draw_status'),
++    ]
++
++    operations = [
++        migrations.AddField(
++            model_name='round',
++            name='silent_feedback_released',
++            field=models.BooleanField(
++                default=False,
++                verbose_name='silent round feedback released',
++                help_text='If set, teams can view the adjudicator\'s written feedback for this silent round via their private URL.',
++            ),
++        ),
++    ]
+diff --git a/tabbycat/tournaments/models.py b/tabbycat/tournaments/models.py
+index e00342c..24b08f0 100644
+--- a/tabbycat/tournaments/models.py
++++ b/tabbycat/tournaments/models.py
+@@ -337,6 +337,9 @@ class Round(models.Model):
+         # Translators: A silent round is a round for which results are not disclosed once the round is over.
+         verbose_name=_("silent"),
+         help_text=_("If marked silent, information about this round (such as its results) will not be shown publicly."))
++    silent_feedback_released = models.BooleanField(default=False,
++        verbose_name=_("silent round feedback released"),
++        help_text=_("If set, teams can view the adjudicator's written feedback for this silent round via their private URL."))
+     motions_status = models.CharField(max_length=1, choices=MotionsStatus.choices, default=MotionsStatus.NOT_RELEASED,
+         verbose_name=_("motions status"),
+         help_text=_("The release status of motions for this round"))

@@ -337,6 +337,9 @@ class Round(models.Model):
         # Translators: A silent round is a round for which results are not disclosed once the round is over.
         verbose_name=_("silent"),
         help_text=_("If marked silent, information about this round (such as its results) will not be shown publicly."))
+    silent_feedback_released = models.BooleanField(default=False,
+        verbose_name=_("silent round feedback released"),
+        help_text=_("If set, teams can view the adjudicator's written feedback for this silent round via their private URL."))
     motions_status = models.CharField(max_length=1, choices=MotionsStatus.choices, default=MotionsStatus.NOT_RELEASED,
         verbose_name=_("motions status"),
         help_text=_("The release status of motions for this round"))

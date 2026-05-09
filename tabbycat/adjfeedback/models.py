@@ -145,3 +145,43 @@ class AdjudicatorFeedback(Submission):
         if self.adjudicator not in self.debate.adjudicators:
             raise ValidationError(gettext("Adjudicator did not see this debate."))
         return super(AdjudicatorFeedback, self).clean()
+
+
+class SilentRoundFeedback(models.Model):
+    """Post-tournament written feedback from an adjudicator for a silent round debate.
+
+    Each adjudicator in the panel submits their own feedback independently.
+    Feedback is private between the submitting adj and the teams + tab — other
+    adjudicators in the same debate cannot see each other's write-ups.
+    Visible to teams only after the tab releases it via the Tab Release preference.
+    """
+
+    debate = models.ForeignKey(
+        'draw.Debate',
+        on_delete=models.CASCADE,
+        related_name='silent_round_feedbacks',
+        verbose_name=_("debate"),
+    )
+    submitted_by = models.ForeignKey(
+        DebateAdjudicator,
+        on_delete=models.CASCADE,
+        related_name='silent_round_feedbacks',
+        verbose_name=_("submitted by (debate adjudicator)"),
+    )
+    feedback_text = models.TextField(
+        verbose_name=_("feedback"),
+        help_text=_("Written feedback for all teams in this debate. Only visible to teams after the tab releases it."),
+    )
+    submitted_at = models.DateTimeField(auto_now_add=True, verbose_name=_("submitted at"))
+    updated_at = models.DateTimeField(auto_now=True, verbose_name=_("last updated"))
+
+    class Meta:
+        verbose_name = _("silent round feedback")
+        verbose_name_plural = _("silent round feedbacks")
+        unique_together = [('debate', 'submitted_by')]
+
+    def __str__(self):
+        return "Silent round feedback by {} for {}".format(
+            self.submitted_by.adjudicator.name,
+            self.debate,
+        )

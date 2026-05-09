@@ -3,6 +3,7 @@ from django.urls import path
 from participants.models import Adjudicator, Team
 
 from . import views
+from .silent_round_views import SilentRoundFeedbackSubmitView, SilentRoundFeedbackTeamView
 
 urlpatterns = [
     # Overviews
@@ -28,4 +29,12 @@ urlpatterns = [
     path('add/a<slug:url_key>/',
         views.AdjudicatorAddFeedbackByRandomisedUrlView.as_view(),
         name='adjfeedback-public-add-from-adjudicator-randomised'),
+
+    # Silent round feedback — adj submits, teams view (both via private URL)
+    path('silent/adj/<slug:url_key>/',
+        SilentRoundFeedbackSubmitView.as_view(),
+        name='adjfeedback-silent-round-feedback-submit'),
+    path('silent/team/<slug:url_key>/',
+        SilentRoundFeedbackTeamView.as_view(),
+        name='adjfeedback-silent-round-feedback-team'),
 ]

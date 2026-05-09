@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% load i18n %}
+
+{% block page-title %}{% trans "Silent Round Feedback" %}{% endblock %}
+{% block head-title %}{% trans "Silent Round Feedback" %}{% endblock %}
+{% block sub-title %}{{ adjudicator.name }}{% endblock %}
+
+{% block noindex %}<meta name="robots" content="noindex" />{% endblock %}
+
+{% block content %}
+
+{% if feature_disabled %}
+  {% trans "Silent round feedback is not enabled for this tournament." as message %}
+  {% include "components/alert.html" with type="warning" %}
+
+{% elif not entries %}
+  {% trans "You have no silent round debates to provide feedback for yet. This page will update once the draw and motions for a silent round have been released." as message %}
+  {% include "components/alert.html" with type="info" %}
+
+{% else %}
+
+  {% blocktrans trimmed asvar explainer %}
+    Silent rounds don't come with oral adjudication, which means teams leave the room with no
+    idea what happened. This written feedback is the only closure they get - please treat it
+    that way. Be thorough: explain what decided the debate, walk through each team's case and
+    how it landed, identify the key clashes and who won them and why, note what each team did
+    well and what specifically let them down. The more precise you are, the more useful it is
+    - vague praise or vague criticism helps no one. Your write-up is private to you; other
+    judges in your panel cannot read it. However, the tab team and chief adjudicator can see
+    everything you submit, so this is also a record of the quality of your adjudication.
+    Teams will only be able to read your feedback once the tab releases it after the
+    tournament has finished.
+  {% endblocktrans %}
+  {% include "components/explainer-card.html" with type="info" p1=explainer %}
+
+  {% for entry in entries %}
+    <div class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <strong>{{ entry.debate.round.name }}</strong>
+        {% if entry.existing %}
+          <span class="badge badge-success">✓ {% trans "Submitted" %}</span>
+        {% else %}
+          <span class="badge badge-warning">{% trans "Not yet submitted" %}</span>
+        {% endif %}
+      </div>
+      <div class="card-body">
+
+        <p class="text-muted small mb-3">
+          {% for dt in entry.debate.debateteam_set.all %}
+            <strong>{{ dt.team.short_name }}</strong>{% if not forloop.last %} vs {% endif %}
+          {% endfor %}
+        </p>
+
+        {% if entry.existing %}
+          <div class="alert alert-light border mb-3">
+            <p class="mb-1"><small class="text-muted">{% trans "Your current feedback:" %}</small></p>
+            <p class="mb-1" style="white-space: pre-wrap;">{{ entry.existing.feedback_text }}</p>
+            <small class="text-muted">{% blocktrans trimmed with time=entry.existing.updated_at %}Last updated: {{ time }}{% endblocktrans %}</small>
+          </div>
+        {% endif %}
+
+        <form method="POST">
+          {% csrf_token %}
+          <input type="hidden" name="debate_id" value="{{ entry.debate.id }}">
+          <div class="form-group">
+            <label for="feedback_{{ entry.debate.id }}">
+              {% if entry.existing %}{% trans "Update your feedback:" %}{% else %}{% trans "Write your feedback:" %}{% endif %}
+            </label>
+            <textarea id="feedback_{{ entry.debate.id }}" name="feedback_text" class="form-control" rows="6"
+              placeholder="{% trans "Provide constructive written feedback. All teams in this debate will be able to read this." %}"
+              required>{% if entry.existing %}{{ entry.existing.feedback_text }}{% endif %}</textarea>
+            <small class="form-text text-muted">
+              {% trans "Your feedback is yours alone - other judges in this panel cannot see it." %}
+            </small>
+          </div>
+          <button type="submit" class="btn btn-primary">
+            {% if entry.existing %}{% trans "Update Feedback" %}{% else %}{% trans "Submit Feedback" %}{% endif %}
+          </button>
+        </form>
+
+      </div>
+    </div>
+  {% endfor %}
+
+{% endif %}
+
+{% endblock %}

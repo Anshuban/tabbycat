@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% load i18n %}
+
+{% block page-title %}{% trans "Silent Round Feedback" %}{% endblock %}
+{% block head-title %}<span class="emoji"></span> {% trans "Silent Round Feedback" %}{% endblock %}
+{% block sub-title %}{{ team.short_name }}{% endblock %}
+
+{% block noindex %}<meta name="robots" content="noindex" />{% endblock %}
+
+{% block content %}
+
+{% if feature_disabled %}
+  {% trans "Silent round feedback is not enabled for this tournament." as message %}
+  {% include "components/alert.html" with type="info" %}
+
+{% elif not_released %}
+  {% trans "Silent round feedback has not been released yet. Check back after the tournament has concluded." as message %}
+  {% include "components/alert.html" with type="info" %}
+
+{% elif not entries %}
+  {% trans "You have no silent round debates." as message %}
+  {% include "components/alert.html" with type="info" %}
+
+{% else %}
+
+  {% blocktrans trimmed asvar explainer %}
+    Silent rounds are kept confidential during the tournament, which means you didn't get
+    oral adjudication at the end of the debate. To make sure you still walk away with
+    something useful, we asked your adjudicators to leave written feedback after the
+    tournament. Each judge's write-up is their own - you may see one or more entries
+    per round depending on how many submitted. If a judge hasn't left feedback or you
+    feel you need more detail, you're welcome to reach out to them directly. That said,
+    please keep it constructive - this feedback is meant to help you grow, and we hope
+    you receive it in that spirit. No round should leave you in the dark.
+  {% endblocktrans %}
+  {% include "components/explainer-card.html" with type="info" p1=explainer %}
+
+  {% for entry in entries %}
+    <div class="card mb-4">
+      <div class="card-header">
+        <strong>{{ entry.debate.round.name }}</strong>
+        <span class="text-muted ml-2 small">
+          {% for dt in entry.debate.debateteam_set.all %}
+            {% if dt.team == team %}<strong>{{ dt.team.short_name }}</strong>{% else %}{{ dt.team.short_name }}{% endif %}
+            {% if not forloop.last %} vs {% endif %}
+          {% endfor %}
+        </span>
+      </div>
+      <div class="card-body">
+        {% if entry.feedbacks %}
+          {% for fb in entry.feedbacks %}
+            <div class="mb-3 {% if not forloop.last %}pb-3 border-bottom{% endif %}">
+              <p class="mb-1">
+                <strong>{{ fb.submitted_by.adjudicator.name }}</strong>
+                <small class="text-muted ml-1">{% blocktrans trimmed with time=fb.submitted_at %}submitted {{ time }}{% endblocktrans %}</small>
+              </p>
+              <p class="mb-0" style="white-space: pre-wrap; border-left: 3px solid #dee2e6; padding-left: 0.75rem;">{{ fb.feedback_text }}</p>
+            </div>
+          {% endfor %}
+        {% else %}
+          <p class="text-muted font-italic mb-0">{% trans "No adjudicators have submitted feedback for this debate yet." %}</p>
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+
+{% endif %}
+
+{% endblock %}

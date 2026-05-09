@@ -94,6 +94,19 @@
           {% include "components/item-action.html" %}
       {% endif %}
     {% endif %}
+
+    {% if pref.silent_round_feedback_enabled %}
+      {% if object.adjudicator %}
+        {% tournamenturl 'adjfeedback-silent-round-feedback-submit' url_key as url %}
+        {% trans "Fill Silent Round Feedback" as text %}
+        {% include "components/item-action.html" with icon="edit" %}
+      {% elif pref.silent_round_feedback_released %}
+        {% tournamenturl 'adjfeedback-silent-round-feedback-team' url_key as url %}
+        {% trans "View Silent Round Feedback" as text %}
+        {% include "components/item-action.html" with icon="file-text" %}
+      {% endif %}
+    {% endif %}
+
   </div>
 
   <div class="card-deck">

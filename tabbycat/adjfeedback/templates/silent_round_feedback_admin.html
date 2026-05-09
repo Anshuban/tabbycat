@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% load i18n debate_tags %}
+
+{% block page-title %}📝 {% trans "Silent Round Feedback" %}{% endblock %}
+{% block head-title %}<span class="emoji">📝</span> {% trans "Silent Round Feedback" %}{% endblock %}
+
+{% block content %}
+
+<div class="d-flex mb-3 align-items-center">
+  <div>
+    <span class="badge {% if enabled %}badge-success{% else %}badge-secondary{% endif %} mr-2">
+      {% if enabled %}{% trans "Feature: Enabled" %}{% else %}{% trans "Feature: Disabled" %}{% endif %}
+    </span>
+    <span class="badge {% if released %}badge-success{% else %}badge-warning{% endif %}">
+      {% if released %}{% trans "Released to Teams" %}{% else %}{% trans "Not Released to Teams" %}{% endif %}
+    </span>
+  </div>
+  <a href="{% tournamenturl 'options-tournament-section' section='tab_release' %}" class="btn btn-sm btn-outline-secondary ml-auto">
+    ⚙️ {% trans "Manage in Tab Release Settings" %}
+  </a>
+</div>
+
+{% if not enabled %}
+  {% trans "Silent round feedback is currently disabled for this tournament. Enable it in Edit Configuration → Tab Release." as message %}
+  {% include "components/alert.html" with type="warning" %}
+{% endif %}
+
+{% if not released %}
+  {% trans "Feedback has not been released to teams yet. Teams cannot see any feedback until you enable 'Release silent round feedback to teams' in Tab Release settings." as message %}
+  {% include "components/alert.html" with type="info" %}
+{% endif %}
+
+{% if not debate_entries %}
+  {% trans "No silent round debates found with draw and motions released." as message %}
+  {% include "components/alert.html" with type="info" %}
+{% endif %}
+
+{% for entry in debate_entries %}
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <div>
+        <strong>{{ entry.debate.round.name }}</strong>
+        <span class="text-muted ml-2 small">
+          {% for dt in entry.debate.debateteam_set.all %}{{ dt.team.short_name }}{% if not forloop.last %} vs {% endif %}{% endfor %}
+        </span>
+      </div>
+      <span class="badge {% if entry.submitted_count == entry.total_adjs %}badge-success{% elif entry.submitted_count > 0 %}badge-warning{% else %}badge-secondary{% endif %}">
+        {{ entry.submitted_count }}/{{ entry.total_adjs }} {% trans "submitted" %}
+      </span>
+    </div>
+    <div class="card-body p-0">
+      {% for adj_entry in entry.adj_entries %}
+        <div class="px-3 py-2 {% if not forloop.last %}border-bottom{% endif %}">
+          <div class="d-flex justify-content-between align-items-start">
+            <strong class="small">{{ adj_entry.debateadj.adjudicator.name }}</strong>
+            {% if adj_entry.feedback %}
+              <small class="text-muted">{% blocktrans trimmed with time=adj_entry.feedback.updated_at %}updated {{ time }}{% endblocktrans %}</small>
+            {% else %}
+              <span class="badge badge-light">{% trans "Not submitted" %}</span>
+            {% endif %}
+          </div>
+          {% if adj_entry.feedback %}
+            <p class="mb-0 mt-1 small" style="white-space: pre-wrap; border-left: 3px solid #dee2e6; padding-left: 0.75rem;">{{ adj_entry.feedback.feedback_text }}</p>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+{% endfor %}
+
+{% endblock %}

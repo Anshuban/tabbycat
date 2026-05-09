@@ -903,6 +903,24 @@ class PrivateBallotsReleased(BooleanPreference):
     default = False
 
 
+@tournament_preferences_registry.register
+class SilentRoundFeedbackEnabled(BooleanPreference):
+    help_text = _("Enables the silent round feedback feature. When on, adjudicators will see a 'Fill Silent Round Feedback' option on their private URL page after draw and motions are released for a silent round.")
+    verbose_name = _("Enable silent round feedback")
+    section = tab_release
+    name = 'silent_round_feedback_enabled'
+    default = False
+
+
+@tournament_preferences_registry.register
+class SilentRoundFeedbackReleased(BooleanPreference):
+    help_text = _("Releases silent round feedback to teams via their private URLs. ")
+    verbose_name = _("Release silent round feedback to teams")
+    section = tab_release
+    name = 'silent_round_feedback_released'
+    default = False
+
+
 # ==============================================================================
 data_entry = Section('data_entry', verbose_name=_("Data Entry"))
 # ==============================================================================

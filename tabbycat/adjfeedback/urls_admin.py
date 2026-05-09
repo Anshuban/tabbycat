@@ -3,6 +3,7 @@ from django.urls import path
 from participants.models import Adjudicator, Team
 
 from . import views
+from .silent_round_views import SilentRoundFeedbackAdminView
 
 urlpatterns = [
     # Overviews
@@ -85,4 +86,9 @@ urlpatterns = [
     path('csv/feedback.csv',
         views.AdjudicatorFeedbackCsvView.as_view(),
         name='adjfeedback-csv-feedback'),
+
+    # Silent round feedback (post-tournament accountability)
+    path('silent-round-feedback/',
+        SilentRoundFeedbackAdminView.as_view(),
+        name='adjfeedback-silent-round-feedback-admin'),
 ]
