@@ -905,7 +905,9 @@ class PrivateBallotsReleased(BooleanPreference):
 
 @tournament_preferences_registry.register
 class SilentRoundFeedbackEnabled(BooleanPreference):
-    help_text = _("Enables the silent round feedback feature. When on, adjudicators will see a 'Fill Silent Round Feedback' option on their private URL page after draw and motions are released for a silent round.")
+    help_text = _("Enables the silent round feedback feature. When on, adjudicators will see a "
+                  "'Fill Silent Round Feedback' option on their private URL page after draw and "
+                  "motions are released for a silent round.")    
     verbose_name = _("Enable silent round feedback")
     section = tab_release
     name = 'silent_round_feedback_enabled'
